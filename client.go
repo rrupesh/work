@@ -501,44 +501,31 @@ func (c *Client) DeleteScheduledJob(scheduledFor int64, jobID string) error {
 	}
 	return nil
 }
-//
-//// DeletePeriodicJob deletes a job in the scheduled queue.
-//func (c *Client) DeletePeriodicJob(jobID string) error {
-//	ok, jobBytes, err := c.deleteZsetJob(redisKeyScheduled(c.namespace), 0, jobID)
-//	if err != nil {
-//		return err
-//	}
-//
-//	// If we get a job back, parse it and see if it's a unique job. If it is, we need to delete the unique key.
-//	if len(jobBytes) > 0 {
-//		job, err := newJob(jobBytes, nil, nil)
-//		if err != nil {
-//			logError("client.delete_scheduled_job.new_job", err)
-//			return err
-//		}
-//
-//		if job.Unique {
-//			uniqueKey, err := redisKeyUniqueJob(c.namespace, job.Name, job.Args)
-//			if err != nil {
-//				logError("client.delete_scheduled_job.redis_key_unique_job", err)
-//				return err
-//			}
-//			conn := c.pool.Get()
-//			defer conn.Close()
-//
-//			_, err = conn.Do("DEL", uniqueKey)
-//			if err != nil {
-//				logError("worker.delete_unique_job.del", err)
-//				return err
-//			}
-//		}
-//	}
-//
-//	if !ok {
-//		return ErrNotDeleted
-//	}
-//	return nil
-//}
+
+// DeletePeriodicJob deletes a job in the scheduled queue.
+func (c *Client) DeletePeriodicJob(jobName string, spec string) error {
+	//var counter = 0
+
+	scheduledJobs, _, err := c.ScheduledJobs(2)
+	if err != nil {
+		return err
+	}
+	//counter = count
+	for _,sj := range scheduledJobs {
+		if sj.Name == jobName {
+			if sj.ID ==  fmt.Sprintf("periodic:%s:%s:%d", sj.Name, spec, sj.RunAt) {
+				ok, _, err := c.deleteZsetJob(redisKeyScheduled(c.namespace), sj.RunAt, sj.ID)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return ErrNotDeleted
+				}
+			}
+		}
+	}
+	return nil
+}
 
 
 // DeleteRetryJob deletes a job in the retry queue.
@@ -588,10 +575,11 @@ func pauseJobsOn(namespace string, jobName string, pool *redis.Pool) error {
 	conn := pool.Get()
 	defer conn.Close()
 
-	if _, err := conn.Do("DEL", redisKeyJobsPaused(namespace, jobName)); err != nil {
+	if _, err := conn.Do("SET", redisKeyJobsPaused(namespace, jobName), "1"); err != nil {
 		logError("client.unpause_jobs.del", err)
 		return err
 	}
+	return nil
 	return nil
 }
 
@@ -631,31 +619,6 @@ func (c *Client) deleteZsetJob(zsetKey string, zscore int64, jobID string) (bool
 
 	return cnt > 0, jobBytes, nil
 }
-
-//// deleteZsetJob deletes the job in the specified zset (dead, retry, or scheduled queue). zsetKey is like "work:dead" or "work:scheduled". The function deletes all jobs with the given jobID with the specified zscore (there should only be one, but in theory there could be bad data). It will return if at least one job is deleted and if
-//func (c *Client) deleteZsetJobWithoutZscore(zsetKey string, jobID string) (bool, []byte, error) {
-//	script := redis.NewScript(1, redisLuaDeleteMultiCmd)
-//
-//	args := make([]interface{}, 0, 1+2)
-//	args = append(args, zsetKey) // KEY[1]
-//	args = append(args, jobID)   // ARGV[1]
-//
-//	conn := c.pool.Get()
-//	defer conn.Close()
-//	values, err := redis.Values(script.Do(conn, args...))
-//	if len(values) != 2 {
-//		return false, nil, fmt.Errorf("need 2 elements back from redis command")
-//	}
-//
-//	cnt, err := redis.Int64(values[0], err)
-//	jobBytes, err := redis.Bytes(values[1], err)
-//	if err != nil {
-//		logError("client.delete_zset_job.do", err)
-//		return false, nil, err
-//	}
-//
-//	return cnt > 0, jobBytes, nil
-//}
 
 type jobScore struct {
 	JobBytes []byte
