@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"encoding/json"
 )
 
 // ErrNotDeleted is returned by functions that delete jobs to indicate that although the redis commands were successful,
@@ -502,31 +503,71 @@ func (c *Client) DeleteScheduledJob(scheduledFor int64, jobID string) error {
 	return nil
 }
 
-// DeletePeriodicJob deletes a job in the scheduled queue.
-func (c *Client) DeletePeriodicJob(jobName string, spec string) error {
-	//var counter = 0
+// PeriodicJobs returns a list of PeriodicJobs's for a specified named and spec.
+func (c *Client) PeriodicJobs( spec string, jobName string) ([]Job, error) {
+	conn := c.pool.Get()
+	defer conn.Close()
 
-	scheduledJobs, _, err := c.ScheduledJobs(2)
+	var cursor int64
+	var items []string
+	var err error
+
+	results := make([]string, 0)
+	jobs :=  make([]Job, 0)
+
+	for {
+			partialid := fmt.Sprintf("periodic:%s:%s:", jobName, spec)
+
+			values, err := redis.Values(conn.Do("ZSCAN", redisKeyScheduled(c.namespace), cursor, "MATCH", "*" + partialid + "*"))
+			if err != nil {
+				return nil, err
+			}
+
+			values, err = redis.Scan(values, &cursor, &items)
+			if err != nil {
+				return nil, err
+			}
+
+			results = append(results, items...)
+
+			for _,r := range results{
+				job := Job{}
+				json.Unmarshal([]byte(r), &job)
+				jobs = append(jobs, job)
+			}
+
+			if cursor == 0 {
+				break
+			}
+	}
+
+	return jobs, err
+}
+
+// DeletePeriodicJob deletes a periodic job in the scheduled queue.
+func (c* Client) DeletePeriodicJob(enqueuedAt int64, jobID string) error {
+	ok, _, err := c.deleteZsetJob(redisKeyScheduled(c.namespace), enqueuedAt, jobID)
 	if err != nil {
 		return err
 	}
-	//counter = count
-	for _,sj := range scheduledJobs {
-		if sj.Name == jobName {
-			if sj.ID ==  fmt.Sprintf("periodic:%s:%s:%d", sj.Name, spec, sj.RunAt) {
-				ok, _, err := c.deleteZsetJob(redisKeyScheduled(c.namespace), sj.RunAt, sj.ID)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					return ErrNotDeleted
-				}
-			}
-		}
+	if !ok {
+		return ErrNotDeleted
 	}
 	return nil
 }
 
+// DeleteAllScheduledJob deletes all jobs in the scheduled queue.
+func (c *Client) DeleteAllScheduledJob() error {
+	conn := c.pool.Get()
+	defer conn.Close()
+	_, err := conn.Do("DEL", redisKeyScheduled(c.namespace))
+	if err != nil {
+		logError("client.delete_all_scheduled_jobs", err)
+		return err
+	}
+
+	return nil
+}
 
 // DeleteRetryJob deletes a job in the retry queue.
 func (c *Client) DeleteRetryJob(retryAt int64, jobID string) error {
@@ -579,7 +620,6 @@ func pauseJobsOn(namespace string, jobName string, pool *redis.Pool) error {
 		logError("client.unpause_jobs.del", err)
 		return err
 	}
-	return nil
 	return nil
 }
 
