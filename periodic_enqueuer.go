@@ -26,6 +26,7 @@ type periodicJob struct {
 	jobName  string
 	spec     string
 	schedule cron.Schedule
+	args     map[string]interface{}
 }
 
 type scheduledPeriodicJob struct {
@@ -100,9 +101,14 @@ func (pe *periodicEnqueuer) enqueue() error {
 				ID:   id,
 
 				// This is technically wrong, but this lets the bytes be identical for the same periodic job instance. If we don't do this, we'd need to use a different approach -- probably giving each periodic job its own history of the past 100 periodic jobs, and only scheduling a job if it's not in the history.
+<<<<<<< HEAD
 				EnqueuedAt:  epoch,
 				Args:        nil,
 				ScheduledAt: epoch,
+=======
+				EnqueuedAt: epoch,
+				Args:       pj.args,
+>>>>>>> fa27976587b564e82583c485f5ea51afc3703800
 			}
 
 			rawJSON, err := job.serialize()

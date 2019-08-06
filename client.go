@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"encoding/json"
 )
 
 // ErrNotDeleted is returned by functions that delete jobs to indicate that although the redis commands were successful,
@@ -502,6 +503,72 @@ func (c *Client) DeleteScheduledJob(scheduledFor int64, jobID string) error {
 	return nil
 }
 
+// PeriodicJobs returns a list of PeriodicJobs's for a specified named and spec.
+func (c *Client) PeriodicJobs( spec string, jobName string) ([]Job, error) {
+	conn := c.pool.Get()
+	defer conn.Close()
+
+	var cursor int64
+	var items []string
+	var err error
+
+	results := make([]string, 0)
+	jobs :=  make([]Job, 0)
+
+	for {
+			partialid := fmt.Sprintf("periodic:%s:%s:", jobName, spec)
+
+			values, err := redis.Values(conn.Do("ZSCAN", redisKeyScheduled(c.namespace), cursor, "MATCH", "*" + partialid + "*"))
+			if err != nil {
+				return nil, err
+			}
+
+			values, err = redis.Scan(values, &cursor, &items)
+			if err != nil {
+				return nil, err
+			}
+
+			results = append(results, items...)
+
+			for _,r := range results{
+				job := Job{}
+				json.Unmarshal([]byte(r), &job)
+				jobs = append(jobs, job)
+			}
+
+			if cursor == 0 {
+				break
+			}
+	}
+
+	return jobs, err
+}
+
+// DeletePeriodicJob deletes a periodic job in the scheduled queue.
+func (c* Client) DeletePeriodicJob(enqueuedAt int64, jobID string) error {
+	ok, _, err := c.deleteZsetJob(redisKeyScheduled(c.namespace), enqueuedAt, jobID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotDeleted
+	}
+	return nil
+}
+
+// DeleteAllScheduledJob deletes all jobs in the scheduled queue.
+func (c *Client) DeleteAllScheduledJob() error {
+	conn := c.pool.Get()
+	defer conn.Close()
+	_, err := conn.Do("DEL", redisKeyScheduled(c.namespace))
+	if err != nil {
+		logError("client.delete_all_scheduled_jobs", err)
+		return err
+	}
+
+	return nil
+}
+
 // DeleteRetryJob deletes a job in the retry queue.
 func (c *Client) DeleteRetryJob(retryAt int64, jobID string) error {
 	ok, _, err := c.deleteZsetJob(redisKeyRetry(c.namespace), retryAt, jobID)
@@ -510,6 +577,59 @@ func (c *Client) DeleteRetryJob(retryAt int64, jobID string) error {
 	}
 	if !ok {
 		return ErrNotDeleted
+	}
+	return nil
+}
+
+func (c *Client) DeletePausedAndLockedKeys(jobName string) error {
+	return deleteAllPausedAndLockedKeys(c.namespace, jobName, c.pool)
+}
+
+func deleteAllPausedAndLockedKeys(namespace, jobName string, pool *redis.Pool) error {
+	conn := pool.Get()
+	defer conn.Close()
+
+	if _, err := conn.Do("DEL", redisKeyJobsPaused(namespace, jobName)); err != nil {
+		logError("client.delete_paused.del", err)
+		return err
+	}
+	if _, err := conn.Do("DEL", redisKeyJobsLock(namespace, jobName)); err != nil {
+		logError("client.delete_locked_keys.del", err)
+		return err
+	}
+	if _, err := conn.Do("DEL", redisKeyJobsLockInfo(namespace, jobName)); err != nil {
+		logError("client.delete_locked_keys_info.del", err)
+		return err
+	}
+	return nil
+}
+
+func (c* Client) PauseJobs(jobName string) error {
+	return pauseJobsOn(c.namespace, jobName, c.pool)
+}
+
+func (c* Client) UnpauseJobs(jobName string) error {
+	return pauseJobsOff(c.namespace, jobName, c.pool)
+}
+
+func pauseJobsOn(namespace string, jobName string, pool *redis.Pool) error {
+	conn := pool.Get()
+	defer conn.Close()
+
+	if _, err := conn.Do("SET", redisKeyJobsPaused(namespace, jobName), "1"); err != nil {
+		logError("client.unpause_jobs.del", err)
+		return err
+	}
+	return nil
+}
+
+func pauseJobsOff(namespace string, jobName string, pool *redis.Pool) error {
+	conn := pool.Get()
+	defer conn.Close()
+
+	if _, err := conn.Do("DEL", redisKeyJobsPaused(namespace, jobName)); err != nil {
+		logError("client.unpause_jobs.del", err)
+		return err
 	}
 	return nil
 }
